@@ -172,11 +172,14 @@ def score(pred, label):
     print('CCC is ', CCCscore(pred, label))
 
 
-def showloss(loss):
+def showloss(loss, val_loss=[]):
     sns.set()
-    plt.plot(loss)
+    plt.plot(loss, label='training loss')
+    if val_loss:
+        plt.plot(val_loss, label='validation loss')
     plt.xlabel('iteration')
     plt.ylabel('loss')
+    plt.legend()
     plt.show()
 
 
