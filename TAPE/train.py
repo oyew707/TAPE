@@ -7,8 +7,8 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
-from .model import simdatset, AutoEncoder, device
+from operator import add
+from .model import simdatset, AutoEncoder, device, EarlyStopper
 from .utils import showloss
 
 
@@ -24,27 +24,33 @@ def reproducibility(seed=1):
 def training_stage(model, train_loader, optimizer, epochs=128, validation: None | tuple[np.ndarray, np.ndarray] = None):
     loss = []
     recon_loss = []
+    limited_comp_reg_loss = EarlyStopper(patience=10)
+    limited_comp_reg_recon = EarlyStopper(patience=20)
     validation_loss = []
     validation_recon_loss = []
+    transformed_loss = []
     val_data = torch.from_numpy(validation[0]).float().to(device) if validation else None
     val_label = torch.from_numpy(validation[1]).float().to(device) if validation else None
 
-    for _ in tqdm(range(epochs)):
+    for epoch in tqdm(range(epochs)):
         model.train()
         model.state = 'train'
         running_loss, running_recon_loss, running_total = 0.0, 0.0, 0
+        running_transformed_loss = 0
         for _, (data, label) in enumerate(train_loader):
             # reproducibility(seed=0)
             optimizer.zero_grad()
-            x_recon, cell_prop, sigm = model(data)
+            x_recon, cell_prop, _ = model(data)
             batch_loss = F.l1_loss(cell_prop, label) + F.l1_loss(x_recon, data)
             batch_loss.backward()
             optimizer.step()
             running_loss += F.l1_loss(cell_prop, label).item() * data.size(0)
+            running_transformed_loss += F.l1_loss(model.refraction(F.relu(cell_prop)), label).item() * data.size(0)
             running_recon_loss += F.l1_loss(x_recon, data).item() * data.size(0)
             running_total += label.size(0)
         loss.append(running_loss / running_total)
         recon_loss.append(running_loss / running_total)
+        transformed_loss.append(running_transformed_loss/running_total)
 
         if validation is not None:  # compute validation losses
             model.eval()
@@ -53,7 +59,13 @@ def training_stage(model, train_loader, optimizer, epochs=128, validation: None 
             validation_loss.append(F.l1_loss(cell_prop, val_label).cpu().detach().numpy())
             validation_recon_loss.append(F.l1_loss(x_recon, val_data).cpu().detach().numpy())
 
-    return model, loss, recon_loss, validation_loss, validation_recon_loss
+            stop_early = (limited_comp_reg_loss(validation_loss[-1]) or limited_comp_reg_recon(validation_recon_loss[-1]))
+            if stop_early and (epoch > 50):
+                print('Limited computation regularization: '
+                      'stopping training early to avoid overfitting')
+                break
+
+    return model, loss, recon_loss, validation_loss, validation_recon_loss, transformed_loss
 
 
 def adaptive_stage(model, data, optimizerD, optimizerE, step=10, max_iter=5):
@@ -101,14 +113,18 @@ def train_model(train_x, train_y,
     # reproducibility(seed=0)
     optimizer = Adam(model.parameters(), lr=1e-4)
     print('Start training')
-    model, loss, reconloss, valloss, valreconloss = training_stage(model, train_loader,
+    model, loss, reconloss, valloss, valreconloss, transformed_loss = training_stage(model, train_loader,
                                                                    optimizer, epochs=epochs,
                                                                    validation=validation)
     print('Training is done')
     print('prediction loss is:')
-    showloss(loss, valloss)
+    showloss(loss, transformed_loss=transformed_loss, val_loss=valloss)
     print('reconstruction loss is:')
-    showloss(reconloss, valreconloss)
+    showloss(reconloss, val_loss=valreconloss)
+    print('total loss is:')
+    showloss(list(map( add, loss, reconloss)),
+             transformed_loss=list(map( add, transformed_loss, reconloss)),
+             val_loss=list(map( add, valloss, valreconloss)))
     if model_name is not None:
         print('Model is saved')
         torch.save(model, model_name + ".pth")
