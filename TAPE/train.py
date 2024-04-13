@@ -185,7 +185,7 @@ def predict(test_x, genename, celltypes, samplename,
 
     else:
         if model_name is not None and model is None:
-            model = torch.load(model_name + ".pth")
+            model = torch.load(model_name + ".pth", map_location=device)
         elif model is not None and model_name is None:
             model = model
         print('Predict cell fractions without adaptive training')
